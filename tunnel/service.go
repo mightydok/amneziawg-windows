@@ -138,7 +138,7 @@ func (service *tunnelService) Execute(args []string, r <-chan svc.ChangeRequest,
 		return
 	}
 	if geo != nil {
-		sweepStaleGeoRoutes()
+		geo.sweepStale()
 	}
 
 	if m, err := mgr.Connect(); err == nil {

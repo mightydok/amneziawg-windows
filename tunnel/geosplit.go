@@ -49,6 +49,9 @@ type geoSplit struct {
 
 	mu        sync.Mutex
 	installed map[winipcfg.AddressFamily]*geoInstalled
+	// protocol is the NL_ROUTE_PROTOCOL used for new routes. It starts as the marker
+	// and falls back to NetMgmt if the stack rejects the marker.
+	protocol winipcfg.RouteProtocol
 }
 
 // loadGeoSplit prepares the direct sets for the configuration. It returns nil when the
@@ -78,6 +81,7 @@ func loadGeoSplit(config *conf.Config) (*geoSplit, error) {
 		permitPrivate: settings.PermitPrivate,
 		stats:         result.Stats,
 		installed:     make(map[winipcfg.AddressFamily]*geoInstalled),
+		protocol:      geoRouteProtocol,
 	}
 	age := "embedded snapshot"
 	if src.Kind == geolist.SourceCache {
@@ -150,8 +154,20 @@ func (g *geoSplit) onDefaultRoute(family winipcfg.AddressFamily, luid winipcfg.L
 	var added, failed int64
 	var errMu sync.Mutex
 	var firstErr error
+
+	// Probe with the first prefix: if the stack rejects the marker protocol, fall
+	// back to NetMgmt for this and all later routes. Removal matches by prefix, so
+	// the marker is only an optimization for the stale-route sweep.
+	if g.protocol == geoRouteProtocol {
+		err := createGeoRoute(luid, prefixes[0], nextHop, g.protocol)
+		if err == windows.ERROR_INVALID_PARAMETER || err == windows.ERROR_NOT_SUPPORTED {
+			log.Printf("Geo-split: the routing stack rejected the marker protocol (%v), using NetMgmt instead", err)
+			g.protocol = winipcfg.RouteProtocolNetMgmt
+		}
+	}
+
 	parallelFor(len(prefixes), func(i int) {
-		err := createGeoRoute(luid, prefixes[i], nextHop)
+		err := createGeoRoute(luid, prefixes[i], nextHop, g.protocol)
 		if err != nil {
 			atomic.AddInt64(&failed, 1)
 			errMu.Lock()
@@ -203,7 +219,7 @@ func parallelFor(n int, fn func(i int)) {
 	wg.Wait()
 }
 
-func createGeoRoute(luid winipcfg.LUID, p netip.Prefix, nextHop net.IP) error {
+func createGeoRoute(luid winipcfg.LUID, p netip.Prefix, nextHop net.IP, protocol winipcfg.RouteProtocol) error {
 	row := winipcfg.MibIPforwardRow2{}
 	row.Init()
 	row.InterfaceLUID = luid
@@ -214,7 +230,7 @@ func createGeoRoute(luid winipcfg.LUID, p netip.Prefix, nextHop net.IP) error {
 		return err
 	}
 	row.Metric = 0
-	row.Protocol = geoRouteProtocol
+	row.Protocol = protocol
 	err := row.Create()
 	if err == windows.ERROR_OBJECT_ALREADY_EXISTS {
 		return nil
@@ -261,12 +277,28 @@ func (g *geoSplit) removeAll() {
 	}
 }
 
-// sweepStaleGeoRoutes removes marker routes left behind by an instance that did not
-// shut down cleanly. It is called before any new routes are installed.
-func sweepStaleGeoRoutes() {
+// sweepStale removes routes left behind by an instance that did not shut down
+// cleanly: anything carrying the marker protocol, plus metric-0 NetMgmt routes to
+// exactly our prefixes (the fallback shape). It runs before new routes are installed.
+func (g *geoSplit) sweepStale() {
 	for _, family := range []winipcfg.AddressFamily{windows.AF_INET, windows.AF_INET6} {
+		set := make(map[netip.Prefix]struct{}, len(g.prefixes(family)))
+		for _, p := range g.prefixes(family) {
+			set[p] = struct{}{}
+		}
 		n := deleteRoutes(family, func(row *winipcfg.MibIPforwardRow2) bool {
-			return row.Protocol == geoRouteProtocol
+			if row.Protocol == geoRouteProtocol {
+				return true
+			}
+			if row.Protocol != winipcfg.RouteProtocolNetMgmt || row.Metric != 0 || row.DestinationPrefix.PrefixLength == 0 {
+				return false
+			}
+			p, ok := rowPrefix(row)
+			if !ok {
+				return false
+			}
+			_, ours := set[p]
+			return ours
 		})
 		if n > 0 {
 			log.Printf("Geo-split: removed %d stale %s routes from a previous instance", n, familyName(family))
