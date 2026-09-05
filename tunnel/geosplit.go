@@ -135,7 +135,9 @@ func (g *geoSplit) otherVPNAdapters(tunLUID winipcfg.LUID) []uint64 {
 	if len(g.permitAdapters) == 0 {
 		return nil
 	}
-	ifaces, err := winipcfg.GetAdaptersAddresses(windows.AF_UNSPEC, winipcfg.GAAFlagIncludeAllInterfaces)
+	// Default flags list only adapters bound to TCP/IP (connected or not), which
+	// leaves out the per-adapter pseudo-interfaces of NDIS filter drivers.
+	ifaces, err := winipcfg.GetAdaptersAddresses(windows.AF_UNSPEC, winipcfg.GAAFlagDefault)
 	if err != nil {
 		log.Printf("Geo-split: unable to enumerate adapters: %v", err)
 		return nil
@@ -145,6 +147,9 @@ func (g *geoSplit) otherVPNAdapters(tunLUID winipcfg.LUID) []uint64 {
 	defer g.mu.Unlock()
 	for _, iface := range ifaces {
 		if iface.LUID == tunLUID || g.permittedIfaces[iface.LUID] {
+			continue
+		}
+		if iface.IfType == winipcfg.IfTypeSoftwareLoopback {
 			continue
 		}
 		if !g.adapterMatches(iface.FriendlyName(), iface.Description()) {
