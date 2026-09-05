@@ -18,6 +18,7 @@ import (
 	"net/netip"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/sys/windows"
@@ -146,25 +147,60 @@ func (g *geoSplit) onDefaultRoute(family winipcfg.AddressFamily, luid winipcfg.L
 	}
 
 	start := time.Now()
-	added, failed := 0, 0
+	var added, failed int64
+	var errMu sync.Mutex
 	var firstErr error
-	for _, p := range prefixes {
-		err := createGeoRoute(luid, p, nextHop)
+	parallelFor(len(prefixes), func(i int) {
+		err := createGeoRoute(luid, prefixes[i], nextHop)
 		if err != nil {
-			failed++
+			atomic.AddInt64(&failed, 1)
+			errMu.Lock()
 			if firstErr == nil {
 				firstErr = err
 			}
-			continue
+			errMu.Unlock()
+			return
 		}
-		added++
-	}
-	g.installed[family] = &geoInstalled{luid: luid, nextHop: nextHop, count: added}
+		atomic.AddInt64(&added, 1)
+	})
+	g.installed[family] = &geoInstalled{luid: luid, nextHop: nextHop, count: int(added)}
 	msg := fmt.Sprintf("Geo-split: installed %d %s direct routes via %s on interface LUID %d in %v", added, familyName(family), nextHopString(nextHop), luid, time.Since(start).Round(time.Millisecond))
 	if failed > 0 {
 		msg += fmt.Sprintf(" (%d failed, first error: %v)", failed, firstErr)
 	}
 	log.Println(msg)
+}
+
+// geoRouteWorkers bounds the concurrency of route creation and deletion. Each
+// IP Helper call is a kernel round trip; running several in flight cuts the wall
+// time for thousands of routes without hammering the stack.
+const geoRouteWorkers = 8
+
+// parallelFor runs fn(i) for i in [0, n) on a bounded pool of goroutines.
+func parallelFor(n int, fn func(i int)) {
+	if n <= 0 {
+		return
+	}
+	workers := geoRouteWorkers
+	if n < workers {
+		workers = n
+	}
+	var wg sync.WaitGroup
+	next := int64(-1)
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				i := int(atomic.AddInt64(&next, 1))
+				if i >= n {
+					return
+				}
+				fn(i)
+			}
+		}()
+	}
+	wg.Wait()
 }
 
 func createGeoRoute(luid winipcfg.LUID, p netip.Prefix, nextHop net.IP) error {
@@ -244,16 +280,19 @@ func deleteRoutes(family winipcfg.AddressFamily, match func(*winipcfg.MibIPforwa
 		log.Printf("Geo-split: unable to read the %s routing table: %v", familyName(family), err)
 		return 0
 	}
-	n := 0
+	var rows []*winipcfg.MibIPforwardRow2
 	for i := range table {
-		if !match(&table[i]) {
-			continue
-		}
-		if err := table[i].Delete(); err == nil {
-			n++
+		if match(&table[i]) {
+			rows = append(rows, &table[i])
 		}
 	}
-	return n
+	var n int64
+	parallelFor(len(rows), func(i int) {
+		if err := rows[i].Delete(); err == nil {
+			atomic.AddInt64(&n, 1)
+		}
+	})
+	return int(n)
 }
 
 func rowPrefix(row *winipcfg.MibIPforwardRow2) (netip.Prefix, bool) {

@@ -91,14 +91,16 @@ func (service *tunnelService) Execute(args []string, r <-chan svc.ChangeRequest,
 		if watcher != nil {
 			watcher.Destroy()
 		}
-		if geo != nil {
-			geo.removeAll()
-		}
 		if uapi != nil {
 			uapi.Close()
 		}
 		if dev != nil {
 			dev.Close()
+		}
+		// Only after the adapter is gone: removing thousands of exception routes can
+		// take a while, and a shutdown watchdog kill must never leave the adapter behind.
+		if geo != nil {
+			geo.removeAll()
 		}
 		if logErr == nil && dev != nil && config != nil {
 			_ = runScriptCommand(config.Interface.PostDown, config.Name)
