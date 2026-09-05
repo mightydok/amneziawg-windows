@@ -11,6 +11,8 @@ import (
 	"net/netip"
 	"runtime"
 	"unsafe"
+
+	"golang.org/x/sys/windows"
 )
 
 // Exceptions lists remote destinations that stay reachable on non-tunnel interfaces
@@ -24,11 +26,78 @@ type Exceptions struct {
 	// multicast ranges above the DNS restriction, so LAN devices and other VPN
 	// adapters (with their DNS servers) keep working.
 	PermitPrivate bool
+	// InterfaceLUIDs are adapters of other VPN clients; outbound connections on
+	// them are permitted above the DNS restriction, so routes those clients push
+	// to public addresses keep working through their tunnels.
+	InterfaceLUIDs []uint64
 }
 
 // IsEmpty reports whether the exceptions would add no filters.
 func (e *Exceptions) IsEmpty() bool {
-	return e == nil || (len(e.Prefixes4) == 0 && len(e.Prefixes6) == 0 && !e.PermitPrivate)
+	return e == nil || (len(e.Prefixes4) == 0 && len(e.Prefixes6) == 0 && !e.PermitPrivate && len(e.InterfaceLUIDs) == 0)
+}
+
+// permitInterfaceOutbound permits outbound IPv4 and IPv6 connections on one interface.
+func permitInterfaceOutbound(session uintptr, baseObjects *baseObjects, weight uint8, ifLUID uint64) error {
+	ifaceCondition := wtFwpmFilterCondition0{
+		fieldKey:  cFWPM_CONDITION_IP_LOCAL_INTERFACE,
+		matchType: cFWP_MATCH_EQUAL,
+		conditionValue: wtFwpConditionValue0{
+			_type: cFWP_UINT64,
+			value: (uintptr)(unsafe.Pointer(&ifLUID)),
+		},
+	}
+	filter := wtFwpmFilter0{
+		providerKey:         &baseObjects.provider,
+		subLayerKey:         baseObjects.filters,
+		weight:              filterWeight(weight),
+		numFilterConditions: 1,
+		filterCondition:     (*wtFwpmFilterCondition0)(unsafe.Pointer(&ifaceCondition)),
+		action: wtFwpmAction0{
+			_type: cFWP_ACTION_PERMIT,
+		},
+	}
+	for _, layer := range []struct {
+		key  windows.GUID
+		name string
+	}{
+		{cFWPM_LAYER_ALE_AUTH_CONNECT_V4, "Permit outbound IPv4 traffic on other VPN adapter"},
+		{cFWPM_LAYER_ALE_AUTH_CONNECT_V6, "Permit outbound IPv6 traffic on other VPN adapter"},
+	} {
+		displayData, err := createWtFwpmDisplayData0(layer.name, "")
+		if err != nil {
+			return wrapErr(err)
+		}
+		filter.displayData = *displayData
+		filter.layerKey = layer.key
+		filterID := uint64(0)
+		err = fwpmFilterAdd0(session, &filter, 0, &filterID)
+		runtime.KeepAlive(ifLUID)
+		if err != nil {
+			return wrapErr(err)
+		}
+	}
+	return nil
+}
+
+func permitInterfaces(session uintptr, baseObjects *baseObjects, weight uint8, luids []uint64) error {
+	for _, luid := range luids {
+		if err := permitInterfaceOutbound(session, baseObjects, weight, luid); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// PermitInterface adds the other-VPN-adapter permit for an adapter that appeared
+// after the firewall was enabled. It is a no-op while the firewall is off.
+func PermitInterface(luid uint64) error {
+	if wfpSession == 0 || wfpBaseObjects == nil || !wfpRestricting {
+		return nil
+	}
+	return runTransaction(wfpSession, func(session uintptr) error {
+		return permitInterfaceOutbound(session, wfpBaseObjects, 15, luid)
+	})
 }
 
 // prefixesPerFilter bounds the number of OR-ed conditions in one WFP filter.

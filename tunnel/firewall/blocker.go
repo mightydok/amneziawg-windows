@@ -23,7 +23,11 @@ type baseObjects struct {
 	filters  windows.GUID
 }
 
-var wfpSession uintptr
+var (
+	wfpSession     uintptr
+	wfpBaseObjects *baseObjects
+	wfpRestricting bool
+)
 
 func createWfpSession() (uintptr, error) {
 	sessionDisplayData, err := createWtFwpmDisplayData0("WireGuard", "WireGuard dynamic session")
@@ -113,11 +117,13 @@ func EnableFirewall(luid uint64, doNotRestrict bool, restrictToDNSServers []net.
 		return wrapErr(err)
 	}
 
+	var installedBaseObjects *baseObjects
 	objectInstaller := func(session uintptr) error {
 		baseObjects, err := registerBaseObjects(session)
 		if err != nil {
 			return wrapErr(err)
 		}
+		installedBaseObjects = baseObjects
 
 		err = permitWireGuardService(session, baseObjects, 15)
 		if err != nil {
@@ -136,6 +142,15 @@ func EnableFirewall(luid uint64, doNotRestrict bool, restrictToDNSServers []net.
 				// Above the DNS deny (14) so DNS servers on private addresses,
 				// e.g. pushed by another VPN adapter, remain usable.
 				err = permitPrivateOutbound(session, baseObjects, 15)
+				if err != nil {
+					return wrapErr(err)
+				}
+			}
+
+			if exceptions != nil && len(exceptions.InterfaceLUIDs) > 0 {
+				// Also above the DNS deny: DNS servers reached through another VPN
+				// adapter must stay usable.
+				err = permitInterfaces(session, baseObjects, 15, exceptions.InterfaceLUIDs)
 				if err != nil {
 					return wrapErr(err)
 				}
@@ -197,6 +212,8 @@ func EnableFirewall(luid uint64, doNotRestrict bool, restrictToDNSServers []net.
 	}
 
 	wfpSession = session
+	wfpBaseObjects = installedBaseObjects
+	wfpRestricting = !doNotRestrict
 	return nil
 }
 
@@ -204,5 +221,7 @@ func DisableFirewall() {
 	if wfpSession != 0 {
 		fwpmEngineClose0(wfpSession)
 		wfpSession = 0
+		wfpBaseObjects = nil
+		wfpRestricting = false
 	}
 }

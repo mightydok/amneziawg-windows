@@ -132,7 +132,10 @@ func watchInterface() (*interfaceWatcher, error) {
 			iw.storedEvents = append(iw.storedEvents, interfaceWatcherEvent{iface.InterfaceLUID, iface.Family})
 			return
 		}
-		if iface.InterfaceLUID != winipcfg.LUID(iw.tun.LUID()) {
+		tunLUID := winipcfg.LUID(iw.tun.LUID())
+		if iface.InterfaceLUID != tunLUID {
+			// Another VPN client may have just created its adapter.
+			iw.geo.onInterfaceAdded(iface.InterfaceLUID, tunLUID)
 			return
 		}
 		iw.setup(iface.Family)

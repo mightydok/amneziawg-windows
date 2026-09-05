@@ -194,5 +194,5 @@ func enableFirewall(conf *conf.Config, tun *tun.NativeTun, geo *geoSplit) error 
 		log.Println("Geo-split is enabled but the configuration has no 0.0.0.0/0 or ::/0 allowed IP, so the kill-switch stays off")
 	}
 	log.Println("Enabling firewall rules")
-	return firewall.EnableFirewall(tun.LUID(), doNotRestrict, conf.Interface.DNS, geo.exceptions())
+	return firewall.EnableFirewall(tun.LUID(), doNotRestrict, conf.Interface.DNS, geo.exceptions(winipcfg.LUID(tun.LUID())))
 }

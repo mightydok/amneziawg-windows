@@ -52,28 +52,48 @@ func ValidCountry(s string) bool {
 
 // Settings are the global geo-split settings written by the manager service.
 type Settings struct {
-	UpdateOnStart bool     `json:"update_on_start"`
-	StaleHours    int      `json:"stale_hours"`
-	MinPrefixV4   int      `json:"min_prefix_v4"`
-	IPv6Mode      string   `json:"ipv6_mode"`
-	PermitPrivate bool     `json:"permit_private"`
-	AlwaysDirect  []string `json:"always_direct"`
-	AlwaysTunnel  []string `json:"always_tunnel"`
-	SourceV4      string   `json:"source_v4"`
-	SourceV6      string   `json:"source_v6"`
+	UpdateOnStart bool   `json:"update_on_start"`
+	StaleHours    int    `json:"stale_hours"`
+	MinPrefixV4   int    `json:"min_prefix_v4"`
+	IPv6Mode      string `json:"ipv6_mode"`
+	PermitPrivate bool   `json:"permit_private"`
+	// PermitAdapters lists case-insensitive substrings; outbound traffic on any
+	// network adapter whose name or description contains one of them is permitted
+	// through the kill-switch, so routes pushed by other VPN clients keep working.
+	PermitAdapters []string `json:"permit_adapters"`
+	AlwaysDirect   []string `json:"always_direct"`
+	AlwaysTunnel   []string `json:"always_tunnel"`
+	SourceV4       string   `json:"source_v4"`
+	SourceV6       string   `json:"source_v6"`
 }
+
+// DefaultPermitAdapters matches the adapters of common VPN clients.
+var DefaultPermitAdapters = []string{"TAP-Windows", "OpenVPN", "Wintun", "WireGuard"}
 
 // DefaultSettings returns the settings used when no file exists.
 func DefaultSettings() Settings {
 	return Settings{
-		UpdateOnStart: true,
-		StaleHours:    DefaultStaleHours,
-		MinPrefixV4:   DefaultMinPrefixV4,
-		IPv6Mode:      IPv6Direct,
-		PermitPrivate: true,
-		SourceV4:      DefaultSourceV4,
-		SourceV6:      DefaultSourceV6,
+		UpdateOnStart:  true,
+		StaleHours:     DefaultStaleHours,
+		MinPrefixV4:    DefaultMinPrefixV4,
+		IPv6Mode:       IPv6Direct,
+		PermitPrivate:  true,
+		PermitAdapters: append([]string(nil), DefaultPermitAdapters...),
+		SourceV4:       DefaultSourceV4,
+		SourceV6:       DefaultSourceV6,
 	}
+}
+
+// AdapterPatterns returns the trimmed, lowercased, non-empty adapter patterns.
+func (s Settings) AdapterPatterns() []string {
+	out := make([]string, 0, len(s.PermitAdapters))
+	for _, p := range s.PermitAdapters {
+		p = strings.ToLower(strings.TrimSpace(p))
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // Validate checks the settings.

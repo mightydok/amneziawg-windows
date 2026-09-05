@@ -47,8 +47,14 @@ type geoSplit struct {
 	permitPrivate bool
 	stats         geolist.Stats
 
+	// permitAdapters are lowercased substrings matched against adapter names and
+	// descriptions; matching adapters get a kill-switch permit.
+	permitAdapters []string
+
 	mu        sync.Mutex
 	installed map[winipcfg.AddressFamily]*geoInstalled
+	// permittedIfaces records adapters that already received a permit filter.
+	permittedIfaces map[winipcfg.LUID]bool
 	// protocol is the NL_ROUTE_PROTOCOL used for new routes. It starts as the marker
 	// and falls back to NetMgmt if the stack rejects the marker.
 	protocol winipcfg.RouteProtocol
@@ -75,13 +81,15 @@ func loadGeoSplit(config *conf.Config) (*geoSplit, error) {
 	}
 	result := geolist.Apply(list4, list6, policy)
 	g := &geoSplit{
-		country:       country,
-		direct4:       result.Direct4,
-		direct6:       result.Direct6,
-		permitPrivate: settings.PermitPrivate,
-		stats:         result.Stats,
-		installed:     make(map[winipcfg.AddressFamily]*geoInstalled),
-		protocol:      geoRouteProtocol,
+		country:         country,
+		direct4:         result.Direct4,
+		direct6:         result.Direct6,
+		permitPrivate:   settings.PermitPrivate,
+		permitAdapters:  settings.AdapterPatterns(),
+		stats:           result.Stats,
+		installed:       make(map[winipcfg.AddressFamily]*geoInstalled),
+		permittedIfaces: make(map[winipcfg.LUID]bool),
+		protocol:        geoRouteProtocol,
 	}
 	age := "embedded snapshot"
 	if src.Kind == geolist.SourceCache {
@@ -96,15 +104,78 @@ func loadGeoSplit(config *conf.Config) (*geoSplit, error) {
 	return g, nil
 }
 
-// exceptions returns the kill-switch exceptions; nil for a nil receiver.
-func (g *geoSplit) exceptions() *firewall.Exceptions {
+// exceptions returns the kill-switch exceptions; nil for a nil receiver. tunLUID is
+// the tunnel's own adapter, which never counts as another VPN adapter.
+func (g *geoSplit) exceptions(tunLUID winipcfg.LUID) *firewall.Exceptions {
 	if g == nil {
 		return nil
 	}
 	return &firewall.Exceptions{
-		Prefixes4:     g.direct4,
-		Prefixes6:     g.direct6,
-		PermitPrivate: g.permitPrivate,
+		Prefixes4:      g.direct4,
+		Prefixes6:      g.direct6,
+		PermitPrivate:  g.permitPrivate,
+		InterfaceLUIDs: g.otherVPNAdapters(tunLUID),
+	}
+}
+
+func (g *geoSplit) adapterMatches(name, description string) bool {
+	name = strings.ToLower(name)
+	description = strings.ToLower(description)
+	for _, p := range g.permitAdapters {
+		if strings.Contains(name, p) || strings.Contains(description, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// otherVPNAdapters returns the LUIDs of present adapters matching the configured
+// patterns that have not been permitted yet, and records them as permitted.
+func (g *geoSplit) otherVPNAdapters(tunLUID winipcfg.LUID) []uint64 {
+	if len(g.permitAdapters) == 0 {
+		return nil
+	}
+	ifaces, err := winipcfg.GetAdaptersAddresses(windows.AF_UNSPEC, winipcfg.GAAFlagIncludeAllInterfaces)
+	if err != nil {
+		log.Printf("Geo-split: unable to enumerate adapters: %v", err)
+		return nil
+	}
+	var out []uint64
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for _, iface := range ifaces {
+		if iface.LUID == tunLUID || g.permittedIfaces[iface.LUID] {
+			continue
+		}
+		if !g.adapterMatches(iface.FriendlyName(), iface.Description()) {
+			continue
+		}
+		g.permittedIfaces[iface.LUID] = true
+		log.Printf("Geo-split: permitting other VPN adapter %q (%s) through the kill-switch", iface.FriendlyName(), iface.Description())
+		out = append(out, uint64(iface.LUID))
+	}
+	return out
+}
+
+// onInterfaceAdded permits an adapter of another VPN client that appeared after the
+// firewall was enabled.
+func (g *geoSplit) onInterfaceAdded(luid, tunLUID winipcfg.LUID) {
+	if g == nil || luid == tunLUID || len(g.permitAdapters) == 0 {
+		return
+	}
+	g.mu.Lock()
+	already := g.permittedIfaces[luid]
+	g.mu.Unlock()
+	if already {
+		return
+	}
+	for _, l := range g.otherVPNAdapters(tunLUID) {
+		if l != uint64(luid) {
+			continue
+		}
+		if err := firewall.PermitInterface(l); err != nil {
+			log.Printf("Geo-split: unable to permit adapter LUID %d: %v", l, err)
+		}
 	}
 }
 
