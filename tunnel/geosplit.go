@@ -136,6 +136,14 @@ func (g *geoSplit) onDefaultRoute(family winipcfg.AddressFamily, luid winipcfg.L
 	if len(prefixes) == 0 {
 		return
 	}
+	if nextHop == nil {
+		// An on-link default route (PPP, cellular) has no gateway; mirror that.
+		if family == windows.AF_INET6 {
+			nextHop = net.IPv6zero
+		} else {
+			nextHop = net.IPv4zero
+		}
+	}
 
 	start := time.Now()
 	added, failed := 0, 0
