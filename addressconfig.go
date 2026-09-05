@@ -186,5 +186,6 @@ func enableFirewall(conf *conf.Config, tun *tun.NativeTun) error {
 		}
 	}
 	log.Println("Enabling firewall rules")
-	return firewall.EnableFirewall(tun.LUID(), doNotRestrict, conf.Interface.DNS)
+	// The standalone service does not implement geo-split exceptions.
+	return firewall.EnableFirewall(tun.LUID(), doNotRestrict, conf.Interface.DNS, nil)
 }

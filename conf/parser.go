@@ -448,6 +448,12 @@ func FromWgQuick(s string, name string) (*Config, error) {
 					return nil, err
 				}
 				conf.Interface.TableOff = tableOff
+			case "geosplit":
+				country, err := parseGeoSplit(val)
+				if err != nil {
+					return nil, err
+				}
+				conf.Interface.GeoSplit = country
 			default:
 				return nil, &ParseError{l18n.Sprintf("Invalid key for [Interface] section"), key}
 			}

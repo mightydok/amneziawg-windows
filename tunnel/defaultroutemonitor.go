@@ -7,6 +7,7 @@ package tunnel
 
 import (
 	"log"
+	"net"
 	"sync"
 	"time"
 
@@ -17,14 +18,23 @@ import (
 	"github.com/amnezia-vpn/amneziawg-windows/v3/tunnel/winipcfg"
 )
 
-func bindSocketRoute(family winipcfg.AddressFamily, binder conn.BindSocketToInterface, ourLUID winipcfg.LUID, lastLUID *winipcfg.LUID, lastIndex *uint32, blackholeWhenLoop bool) error {
+// defaultRoute identifies the physical default route the tunnel currently rides on.
+type defaultRoute struct {
+	luid    winipcfg.LUID
+	index   uint32
+	nextHop net.IP
+}
+
+func findDefaultRoute(family winipcfg.AddressFamily, ourLUID winipcfg.LUID) (defaultRoute, error) {
 	r, err := winipcfg.GetIPForwardTable2(family)
 	if err != nil {
-		return err
+		return defaultRoute{}, err
 	}
 	lowestMetric := ^uint32(0)
-	index := uint32(0)       // Zero is "unspecified", which for IP_UNICAST_IF resets the value, which is what we want.
-	luid := winipcfg.LUID(0) // Hopefully luid zero is unspecified, but hard to find docs saying so.
+	best := defaultRoute{
+		index: 0,                // Zero is "unspecified", which for IP_UNICAST_IF resets the value, which is what we want.
+		luid:  winipcfg.LUID(0), // Hopefully luid zero is unspecified, but hard to find docs saying so.
+	}
 	for i := range r {
 		if r[i].DestinationPrefix.PrefixLength != 0 || r[i].InterfaceLUID == ourLUID {
 			continue
@@ -41,15 +51,31 @@ func bindSocketRoute(family winipcfg.AddressFamily, binder conn.BindSocketToInte
 
 		if r[i].Metric+iface.Metric < lowestMetric {
 			lowestMetric = r[i].Metric + iface.Metric
-			index = r[i].InterfaceIndex
-			luid = r[i].InterfaceLUID
+			best.index = r[i].InterfaceIndex
+			best.luid = r[i].InterfaceLUID
+			best.nextHop = r[i].NextHop.IP()
 		}
 	}
-	if luid == *lastLUID && index == *lastIndex {
+	return best, nil
+}
+
+func bindSocketRoute(family winipcfg.AddressFamily, binder conn.BindSocketToInterface, ourLUID winipcfg.LUID, last *defaultRoute, blackholeWhenLoop bool, geo *geoSplit) error {
+	cur, err := findDefaultRoute(family, ourLUID)
+	if err != nil {
+		return err
+	}
+	interfaceChanged := cur.luid != last.luid || cur.index != last.index
+	nextHopChanged := interfaceChanged || !cur.nextHop.Equal(last.nextHop)
+	*last = cur
+	if nextHopChanged {
+		// Re-point the geo-split exception routes before rebinding, so that direct
+		// traffic keeps flowing through the tunnel until the new routes are in place.
+		geo.onDefaultRoute(family, cur.luid, cur.nextHop)
+	}
+	if !interfaceChanged {
 		return nil
 	}
-	*lastLUID = luid
-	*lastIndex = index
+	index := cur.index
 	blackhole := blackholeWhenLoop && index == 0
 	if family == windows.AF_INET {
 		log.Printf("Binding v4 socket to interface %d (blackhole=%v)", index, blackhole)
@@ -61,7 +87,7 @@ func bindSocketRoute(family winipcfg.AddressFamily, binder conn.BindSocketToInte
 	return nil
 }
 
-func monitorDefaultRoutes(family winipcfg.AddressFamily, binder conn.BindSocketToInterface, autoMTU bool, blackholeWhenLoop bool, tun *tun.NativeTun) ([]winipcfg.ChangeCallback, error) {
+func monitorDefaultRoutes(family winipcfg.AddressFamily, binder conn.BindSocketToInterface, autoMTU bool, blackholeWhenLoop bool, tun *tun.NativeTun, geo *geoSplit) ([]winipcfg.ChangeCallback, error) {
 	var minMTU uint32
 	if family == windows.AF_INET {
 		minMTU = 576
@@ -69,11 +95,10 @@ func monitorDefaultRoutes(family winipcfg.AddressFamily, binder conn.BindSocketT
 		minMTU = 1280
 	}
 	ourLUID := winipcfg.LUID(tun.LUID())
-	lastLUID := winipcfg.LUID(0)
-	lastIndex := ^uint32(0)
+	last := defaultRoute{index: ^uint32(0)}
 	lastMTU := uint32(0)
 	doIt := func() error {
-		err := bindSocketRoute(family, binder, ourLUID, &lastLUID, &lastIndex, blackholeWhenLoop)
+		err := bindSocketRoute(family, binder, ourLUID, &last, blackholeWhenLoop, geo)
 		if err != nil {
 			return err
 		}
@@ -81,8 +106,8 @@ func monitorDefaultRoutes(family winipcfg.AddressFamily, binder conn.BindSocketT
 			return nil
 		}
 		mtu := uint32(0)
-		if lastLUID != 0 {
-			iface, err := lastLUID.Interface()
+		if last.luid != 0 {
+			iface, err := last.luid.Interface()
 			if err != nil {
 				return err
 			}

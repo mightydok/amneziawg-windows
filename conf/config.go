@@ -55,6 +55,10 @@ type Interface struct {
 	PostDown   string
 	TableOff   bool
 
+	// GeoSplit is a lowercase country code. That country's prefixes are routed outside
+	// the tunnel and permitted through the kill-switch. Empty disables the feature.
+	GeoSplit string
+
 	JunkPacketCount            uint16
 	JunkPacketMinSize          uint16
 	JunkPacketMaxSize          uint16

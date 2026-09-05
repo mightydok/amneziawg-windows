@@ -34,6 +34,7 @@ type interfaceWatcher struct {
 	binder conn.BindSocketToInterface
 	conf   *conf.Config
 	tun    *tun.NativeTun
+	geo    *geoSplit
 
 	setupMutex              sync.Mutex
 	interfaceChangeCallback winipcfg.ChangeCallback
@@ -101,7 +102,7 @@ func (iw *interfaceWatcher) setup(family winipcfg.AddressFamily) {
 	var err error
 
 	log.Printf("Monitoring default %s routes", ipversion)
-	*changeCallbacks, err = monitorDefaultRoutes(family, iw.binder, iw.conf.Interface.MTU == 0, hasDefaultRoute(family, iw.conf.Peers), iw.tun)
+	*changeCallbacks, err = monitorDefaultRoutes(family, iw.binder, iw.conf.Interface.MTU == 0, hasDefaultRoute(family, iw.conf.Peers), iw.tun, iw.geo)
 	if err != nil {
 		iw.errors <- interfaceWatcherError{services.ErrorBindSocketsToDefaultRoutes, err}
 		return
@@ -142,11 +143,11 @@ func watchInterface() (*interfaceWatcher, error) {
 	return iw, nil
 }
 
-func (iw *interfaceWatcher) Configure(binder conn.BindSocketToInterface, conf *conf.Config, tun *tun.NativeTun) {
+func (iw *interfaceWatcher) Configure(binder conn.BindSocketToInterface, conf *conf.Config, tun *tun.NativeTun, geo *geoSplit) {
 	iw.setupMutex.Lock()
 	defer iw.setupMutex.Unlock()
 
-	iw.binder, iw.conf, iw.tun = binder, conf, tun
+	iw.binder, iw.conf, iw.tun, iw.geo = binder, conf, tun, geo
 	for _, event := range iw.storedEvents {
 		if event.luid == winipcfg.LUID(iw.tun.LUID()) {
 			iw.setup(event.family)

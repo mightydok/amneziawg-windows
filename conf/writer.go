@@ -153,6 +153,9 @@ func (conf *Config) ToWgQuick() string {
 	if conf.Interface.TableOff {
 		output.WriteString("Table = off\n")
 	}
+	if len(conf.Interface.GeoSplit) > 0 {
+		output.WriteString(fmt.Sprintf("GeoSplit = %s\n", conf.Interface.GeoSplit))
+	}
 
 	for _, peer := range conf.Peers {
 		output.WriteString("\n[Peer]\n")

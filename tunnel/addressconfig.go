@@ -174,7 +174,7 @@ func configureInterface(family winipcfg.AddressFamily, conf *conf.Config, tun *t
 	return luid.SetDNS(family, conf.Interface.DNS, conf.Interface.DNSSearch)
 }
 
-func enableFirewall(conf *conf.Config, tun *tun.NativeTun) error {
+func enableFirewall(conf *conf.Config, tun *tun.NativeTun, geo *geoSplit) error {
 	doNotRestrict := true
 	if len(conf.Peers) == 1 && !conf.Interface.TableOff {
 	nextallowedip:
@@ -190,6 +190,9 @@ func enableFirewall(conf *conf.Config, tun *tun.NativeTun) error {
 			}
 		}
 	}
+	if geo != nil && doNotRestrict {
+		log.Println("Geo-split is enabled but the configuration has no 0.0.0.0/0 or ::/0 allowed IP, so the kill-switch stays off")
+	}
 	log.Println("Enabling firewall rules")
-	return firewall.EnableFirewall(tun.LUID(), doNotRestrict, conf.Interface.DNS)
+	return firewall.EnableFirewall(tun.LUID(), doNotRestrict, conf.Interface.DNS, geo.exceptions())
 }

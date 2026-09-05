@@ -41,6 +41,7 @@ func (service *tunnelService) Execute(args []string, r <-chan svc.ChangeRequest,
 	var watcher *interfaceWatcher
 	var nativeTun *tun.NativeTun
 	var config *conf.Config
+	var geo *geoSplit
 	var err error
 	serviceError := services.ErrorSuccess
 
@@ -90,6 +91,9 @@ func (service *tunnelService) Execute(args []string, r <-chan svc.ChangeRequest,
 		if watcher != nil {
 			watcher.Destroy()
 		}
+		if geo != nil {
+			geo.removeAll()
+		}
 		if uapi != nil {
 			uapi.Close()
 		}
@@ -124,6 +128,16 @@ func (service *tunnelService) Execute(args []string, r <-chan svc.ChangeRequest,
 	log.SetPrefix(fmt.Sprintf("[%s] ", config.Name))
 
 	log.Println("Starting", version.UserAgent())
+
+	geo, err = loadGeoSplit(config)
+	if err != nil {
+		log.Println(err)
+		serviceError = services.ErrorLoadConfiguration
+		return
+	}
+	if geo != nil {
+		sweepStaleGeoRoutes()
+	}
 
 	if m, err := mgr.Connect(); err == nil {
 		if lockStatus, err := m.LockStatus(); err == nil && lockStatus.IsLocked {
@@ -182,7 +196,7 @@ func (service *tunnelService) Execute(args []string, r <-chan svc.ChangeRequest,
 		return
 	}
 
-	err = enableFirewall(config, nativeTun)
+	err = enableFirewall(config, nativeTun, geo)
 	if err != nil {
 		serviceError = services.ErrorFirewall
 		return
@@ -214,7 +228,7 @@ func (service *tunnelService) Execute(args []string, r <-chan svc.ChangeRequest,
 	log.Println("Bringing peers up")
 	dev.Up()
 
-	watcher.Configure(bind.(conn.BindSocketToInterface), config, nativeTun)
+	watcher.Configure(bind.(conn.BindSocketToInterface), config, nativeTun, geo)
 
 	log.Println("Listening for UAPI requests")
 	go func() {

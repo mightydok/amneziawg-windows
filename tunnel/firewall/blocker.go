@@ -101,7 +101,9 @@ func registerBaseObjects(session uintptr) (*baseObjects, error) {
 	return bo, nil
 }
 
-func EnableFirewall(luid uint64, doNotRestrict bool, restrictToDNSServers []net.IP) error {
+// EnableFirewall installs the kill-switch rule set. When doNotRestrict is false,
+// exceptions (which may be nil) stay reachable outside the tunnel.
+func EnableFirewall(luid uint64, doNotRestrict bool, restrictToDNSServers []net.IP, exceptions *Exceptions) error {
 	if wfpSession != 0 {
 		return errors.New("The firewall has already been enabled")
 	}
@@ -130,6 +132,15 @@ func EnableFirewall(luid uint64, doNotRestrict bool, restrictToDNSServers []net.
 				}
 			}
 
+			if exceptions != nil && exceptions.PermitPrivate {
+				// Above the DNS deny (14) so DNS servers on private addresses,
+				// e.g. pushed by another VPN adapter, remain usable.
+				err = permitPrivateOutbound(session, baseObjects, 15)
+				if err != nil {
+					return wrapErr(err)
+				}
+			}
+
 			err = permitLoopback(session, baseObjects, 13)
 			if err != nil {
 				return wrapErr(err)
@@ -138,6 +149,13 @@ func EnableFirewall(luid uint64, doNotRestrict bool, restrictToDNSServers []net.
 			err = permitTunInterface(session, baseObjects, 12, luid)
 			if err != nil {
 				return wrapErr(err)
+			}
+
+			if exceptions != nil && (len(exceptions.Prefixes4) > 0 || len(exceptions.Prefixes6) > 0) {
+				err = permitRemotePrefixes(session, baseObjects, 12, "geo-split direct", exceptions.Prefixes4, exceptions.Prefixes6)
+				if err != nil {
+					return wrapErr(err)
+				}
 			}
 
 			err = permitDHCPIPv4(session, baseObjects, 12)
