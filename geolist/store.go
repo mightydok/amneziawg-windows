@@ -67,8 +67,10 @@ type Settings struct {
 	SourceV6       string   `json:"source_v6"`
 }
 
-// DefaultPermitAdapters matches the adapters of common VPN clients.
-var DefaultPermitAdapters = []string{"TAP-Windows", "OpenVPN", "Wintun", "WireGuard"}
+// DefaultPermitAdapters matches the adapters of common VPN clients: OpenVPN (TAP
+// and Wintun drivers), WireGuard and Cisco AnyConnect / Secure Client, whose
+// adapter is described as "Cisco AnyConnect Virtual Miniport Adapter".
+var DefaultPermitAdapters = []string{"TAP-Windows", "OpenVPN", "Wintun", "WireGuard", "AnyConnect"}
 
 // DefaultSettings returns the settings used when no file exists.
 func DefaultSettings() Settings {

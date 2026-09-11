@@ -160,3 +160,22 @@ func TestStoreValidatesAndLoads(t *testing.T) {
 		t.Fatal("temp file left behind")
 	}
 }
+
+func TestDefaultAdapterPatterns(t *testing.T) {
+	got := DefaultSettings().AdapterPatterns()
+	for _, want := range []string{"tap-windows", "openvpn", "wintun", "wireguard", "anyconnect"} {
+		found := false
+		for _, p := range got {
+			if p == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("default adapter patterns %v lack %q", got, want)
+		}
+	}
+	s := Settings{PermitAdapters: []string{" AnyConnect ", "", "  "}}
+	if got := s.AdapterPatterns(); len(got) != 1 || got[0] != "anyconnect" {
+		t.Errorf("AdapterPatterns() = %v, want [anyconnect]", got)
+	}
+}
