@@ -24,9 +24,9 @@ import (
 	"golang.org/x/sys/windows"
 
 	"github.com/amnezia-vpn/amneziawg-windows/v3/conf"
-	"github.com/amnezia-vpn/amneziawg-windows/v3/geolist"
 	"github.com/amnezia-vpn/amneziawg-windows/v3/tunnel/firewall"
 	"github.com/amnezia-vpn/amneziawg-windows/v3/tunnel/winipcfg"
+	"github.com/mightydok/awg-geolist"
 )
 
 // geoRouteProtocol marks the exception routes so that leftovers of a crashed instance
@@ -66,6 +66,9 @@ func loadGeoSplit(config *conf.Config) (*geoSplit, error) {
 	country := config.Interface.GeoSplit
 	if country == "" {
 		return nil, nil
+	}
+	if _, err := conf.GeoListDirectory(); err != nil {
+		return nil, fmt.Errorf("geo-split cache directory: %w", err)
 	}
 	settings, err := geolist.LoadSettings()
 	if err != nil {
