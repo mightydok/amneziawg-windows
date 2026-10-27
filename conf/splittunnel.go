@@ -24,6 +24,30 @@ type SplitDNSRule struct {
 	Servers []net.IP
 }
 
+// ParseExcludeRoutes parses the ExcludeRoutes value (comma-separated prefixes or bare
+// addresses). Exported for the UI editor.
+func ParseExcludeRoutes(s string) ([]netip.Prefix, error) {
+	return parseExcludeRoutes(s)
+}
+
+// ParseSplitDNS parses one or more SplitDNS rules separated by ';' or newlines. Exported
+// for the UI editor, which keeps all rules in a single field.
+func ParseSplitDNS(s string) ([]SplitDNSRule, error) {
+	var out []SplitDNSRule
+	for _, part := range strings.FieldsFunc(s, func(r rune) bool { return r == ';' || r == '\n' }) {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		rule, err := parseSplitDNS(part)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, rule)
+	}
+	return out, nil
+}
+
 // parseExcludeRoutes parses a comma-separated list of prefixes or bare addresses into
 // masked prefixes. A bare address becomes a host route (/32 or /128).
 func parseExcludeRoutes(s string) ([]netip.Prefix, error) {
