@@ -102,6 +102,9 @@ func (service *tunnelService) Execute(args []string, r <-chan svc.ChangeRequest,
 		if geo != nil {
 			geo.removeAll()
 		}
+		if config != nil && len(config.Interface.SplitDNS) > 0 {
+			removeSplitDNS(config.Name)
+		}
 		if logErr == nil && dev != nil && config != nil {
 			_ = runScriptCommand(config.Interface.PostDown, config.Name)
 		}
@@ -202,6 +205,12 @@ func (service *tunnelService) Execute(args []string, r <-chan svc.ChangeRequest,
 	if err != nil {
 		serviceError = services.ErrorFirewall
 		return
+	}
+
+	if len(config.Interface.SplitDNS) > 0 {
+		if err := registerSplitDNS(config.Name, config.Interface.SplitDNS); err != nil {
+			log.Println(err)
+		}
 	}
 
 	log.Println("Dropping privileges")

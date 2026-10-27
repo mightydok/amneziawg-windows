@@ -193,6 +193,12 @@ func enableFirewall(conf *conf.Config, tun *tun.NativeTun, geo *geoSplit) error 
 	if geo != nil && doNotRestrict {
 		log.Println("Geo-split is enabled but the configuration has no 0.0.0.0/0 or ::/0 allowed IP, so the kill-switch stays off")
 	}
+	// Corporate DNS servers used for split DNS must be permitted above the DNS deny,
+	// otherwise the kill-switch blocks resolution of internal domains.
+	permittedDNS := conf.Interface.DNS
+	for _, rule := range conf.Interface.SplitDNS {
+		permittedDNS = append(permittedDNS, rule.Servers...)
+	}
 	log.Println("Enabling firewall rules")
-	return firewall.EnableFirewall(tun.LUID(), doNotRestrict, conf.Interface.DNS, geo.exceptions(winipcfg.LUID(tun.LUID())))
+	return firewall.EnableFirewall(tun.LUID(), doNotRestrict, permittedDNS, geo.exceptions(winipcfg.LUID(tun.LUID())))
 }
