@@ -12,6 +12,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net"
+	"net/netip"
 	"strings"
 	"time"
 
@@ -58,6 +59,16 @@ type Interface struct {
 	// GeoSplit is a lowercase country code. That country's prefixes are routed outside
 	// the tunnel and permitted through the kill-switch. Empty disables the feature.
 	GeoSplit string
+
+	// ExcludeRoutes are prefixes routed outside the tunnel and permitted through the
+	// kill-switch regardless of GeoSplit, for reaching corporate or LAN subnets while a
+	// full-tunnel VPN is up.
+	ExcludeRoutes []netip.Prefix
+
+	// SplitDNS resolves specific domain suffixes on specific DNS servers via NRPT while
+	// the tunnel is up; everything else uses the tunnel DNS. The servers are also routed
+	// outside the tunnel and permitted for DNS.
+	SplitDNS []SplitDNSRule
 
 	JunkPacketCount            uint16
 	JunkPacketMinSize          uint16

@@ -454,6 +454,18 @@ func FromWgQuick(s string, name string) (*Config, error) {
 					return nil, err
 				}
 				conf.Interface.GeoSplit = country
+			case "excluderoutes":
+				prefixes, err := parseExcludeRoutes(val)
+				if err != nil {
+					return nil, err
+				}
+				conf.Interface.ExcludeRoutes = append(conf.Interface.ExcludeRoutes, prefixes...)
+			case "splitdns":
+				rule, err := parseSplitDNS(val)
+				if err != nil {
+					return nil, err
+				}
+				conf.Interface.SplitDNS = append(conf.Interface.SplitDNS, rule)
 			default:
 				return nil, &ParseError{l18n.Sprintf("Invalid key for [Interface] section"), key}
 			}
@@ -566,6 +578,9 @@ func FromUAPI(reader io.Reader, existingConfig *Config) (*Config, error) {
 			MaxHandshakeAttempts:       existingConfig.Interface.MaxHandshakeAttempts,
 			RandomTrailers:             existingConfig.Interface.RandomTrailers,
 			DisableCookies:             existingConfig.Interface.DisableCookies,
+			GeoSplit:                   existingConfig.Interface.GeoSplit,
+			ExcludeRoutes:              existingConfig.Interface.ExcludeRoutes,
+			SplitDNS:                   existingConfig.Interface.SplitDNS,
 		},
 	}
 	var peer *Peer

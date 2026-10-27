@@ -156,6 +156,20 @@ func (conf *Config) ToWgQuick() string {
 	if len(conf.Interface.GeoSplit) > 0 {
 		output.WriteString(fmt.Sprintf("GeoSplit = %s\n", conf.Interface.GeoSplit))
 	}
+	if len(conf.Interface.ExcludeRoutes) > 0 {
+		strs := make([]string, len(conf.Interface.ExcludeRoutes))
+		for i, p := range conf.Interface.ExcludeRoutes {
+			strs[i] = p.String()
+		}
+		output.WriteString(fmt.Sprintf("ExcludeRoutes = %s\n", strings.Join(strs, ", ")))
+	}
+	for _, rule := range conf.Interface.SplitDNS {
+		servers := make([]string, len(rule.Servers))
+		for i, s := range rule.Servers {
+			servers[i] = s.String()
+		}
+		output.WriteString(fmt.Sprintf("SplitDNS = %s > %s\n", rule.Domain, strings.Join(servers, ", ")))
+	}
 
 	for _, peer := range conf.Peers {
 		output.WriteString("\n[Peer]\n")

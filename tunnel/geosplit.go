@@ -60,51 +60,105 @@ type geoSplit struct {
 	protocol winipcfg.RouteProtocol
 }
 
-// loadGeoSplit prepares the direct sets for the configuration. It returns nil when the
-// configuration does not enable geo-split.
+// loadGeoSplit prepares the direct sets for the configuration. The feature activates when
+// any of GeoSplit, ExcludeRoutes or SplitDNS is configured; it returns nil otherwise.
+// GeoSplit contributes a country's prefixes (loaded from the geo cache). ExcludeRoutes and
+// the SplitDNS servers contribute fixed prefixes, both independent of GeoSplit, so a
+// full-tunnel VPN can still reach corporate or LAN subnets and corporate DNS servers.
 func loadGeoSplit(config *conf.Config) (*geoSplit, error) {
 	country := config.Interface.GeoSplit
-	if country == "" {
+	if country == "" && len(config.Interface.ExcludeRoutes) == 0 && len(config.Interface.SplitDNS) == 0 {
 		return nil, nil
 	}
-	if _, err := conf.GeoListDirectory(); err != nil {
-		return nil, fmt.Errorf("geo-split cache directory: %w", err)
-	}
-	settings, err := geolist.LoadSettings()
-	if err != nil {
-		log.Printf("Geo-split: settings are unreadable, using defaults: %v", err)
-	}
-	policy, err := settings.Policy()
-	if err != nil {
-		return nil, fmt.Errorf("geo-split policy: %w", err)
-	}
-	list4, list6, src, err := geolist.Load(country)
-	if err != nil {
-		return nil, fmt.Errorf("geo-split list: %w", err)
-	}
-	result := geolist.Apply(list4, list6, policy)
+
 	g := &geoSplit{
 		country:         country,
-		direct4:         result.Direct4,
-		direct6:         result.Direct6,
-		permitPrivate:   settings.PermitPrivate,
-		permitAdapters:  settings.AdapterPatterns(),
-		stats:           result.Stats,
 		installed:       make(map[winipcfg.AddressFamily]*geoInstalled),
 		permittedIfaces: make(map[winipcfg.LUID]bool),
 		protocol:        geoRouteProtocol,
 	}
-	age := "embedded snapshot"
-	if src.Kind == geolist.SourceCache {
-		if src.FetchedAt.IsZero() {
-			age = "cached list, fetch time unknown"
-		} else {
-			age = fmt.Sprintf("cached list fetched %s ago", time.Since(src.FetchedAt).Round(time.Minute))
+
+	if country != "" {
+		if _, err := conf.GeoListDirectory(); err != nil {
+			return nil, fmt.Errorf("geo-split cache directory: %w", err)
+		}
+		settings, err := geolist.LoadSettings()
+		if err != nil {
+			log.Printf("Geo-split: settings are unreadable, using defaults: %v", err)
+		}
+		policy, err := settings.Policy()
+		if err != nil {
+			return nil, fmt.Errorf("geo-split policy: %w", err)
+		}
+		list4, list6, src, err := geolist.Load(country)
+		if err != nil {
+			return nil, fmt.Errorf("geo-split list: %w", err)
+		}
+		result := geolist.Apply(list4, list6, policy)
+		g.direct4 = result.Direct4
+		g.direct6 = result.Direct6
+		g.permitPrivate = settings.PermitPrivate
+		g.permitAdapters = settings.AdapterPatterns()
+		g.stats = result.Stats
+		age := "embedded snapshot"
+		if src.Kind == geolist.SourceCache {
+			if src.FetchedAt.IsZero() {
+				age = "cached list, fetch time unknown"
+			} else {
+				age = fmt.Sprintf("cached list fetched %s ago", time.Since(src.FetchedAt).Round(time.Minute))
+			}
+		}
+		log.Printf("Geo-split %s: %d IPv4 and %d IPv6 direct routes (%s); %d IPv4 blocks smaller than /%d (%d addresses) go through the tunnel",
+			strings.ToUpper(country), len(g.direct4), len(g.direct6), age, result.Stats.DroppedBlocksV4, policy.MinPrefixV4, result.Stats.DroppedAddrsV4)
+	}
+
+	// ExcludeRoutes and the SplitDNS servers join the direct set regardless of GeoSplit.
+	extra4, extra6 := splitByFamily(config.Interface.ExcludeRoutes)
+	for _, rule := range config.Interface.SplitDNS {
+		for _, server := range rule.Servers {
+			if addr, ok := addrFromIP(server); ok {
+				if addr.Is4() {
+					extra4 = append(extra4, netip.PrefixFrom(addr, 32))
+				} else {
+					extra6 = append(extra6, netip.PrefixFrom(addr, 128))
+				}
+			}
 		}
 	}
-	log.Printf("Geo-split %s: %d IPv4 and %d IPv6 direct routes (%s); %d IPv4 blocks smaller than /%d (%d addresses) go through the tunnel",
-		strings.ToUpper(country), len(g.direct4), len(g.direct6), age, result.Stats.DroppedBlocksV4, policy.MinPrefixV4, result.Stats.DroppedAddrsV4)
+	if len(extra4) > 0 {
+		g.direct4 = geolist.Normalize(append(g.direct4, extra4...))
+	}
+	if len(extra6) > 0 {
+		g.direct6 = geolist.Normalize(append(g.direct6, extra6...))
+	}
+	if country == "" {
+		log.Printf("Split-tunnel: %d IPv4 and %d IPv6 direct routes from ExcludeRoutes/SplitDNS",
+			len(g.direct4), len(g.direct6))
+	}
 	return g, nil
+}
+
+// splitByFamily partitions prefixes into IPv4 and IPv6.
+func splitByFamily(prefixes []netip.Prefix) (v4, v6 []netip.Prefix) {
+	for _, p := range prefixes {
+		if p.Addr().Is4() {
+			v4 = append(v4, p)
+		} else {
+			v6 = append(v6, p)
+		}
+	}
+	return v4, v6
+}
+
+// addrFromIP converts a net.IP to a netip.Addr, mapping 4-in-6 forms to IPv4.
+func addrFromIP(ip net.IP) (netip.Addr, bool) {
+	if v4 := ip.To4(); v4 != nil {
+		return netip.AddrFrom4([4]byte(v4)), true
+	}
+	if v6 := ip.To16(); v6 != nil {
+		return netip.AddrFrom16([16]byte(v6)), true
+	}
+	return netip.Addr{}, false
 }
 
 // exceptions returns the kill-switch exceptions; nil for a nil receiver. tunLUID is
